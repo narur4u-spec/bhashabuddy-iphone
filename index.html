@@ -603,15 +603,56 @@ const ORIGIN_MSG='❌ This page was opened from a file / WhatsApp (content://). 
 const tip=m=>{$('tip').textContent=m||''};
 let items=[];
 /* ---------- speaking out ---------- */
-let VO=[];const gv=()=>{try{VO=speechSynthesis.getVoices()}catch(e){}};
-if('speechSynthesis' in window){gv();speechSynthesis.onvoiceschanged=gv}
+let VO=[];const gv=()=>{try{VO=window.speechSynthesis.getVoices()||[]}catch(e){VO=[]}};
+if('speechSynthesis' in window){gv();window.speechSynthesis.onvoiceschanged=gv}
+let remoteTTS=null,remoteTTSTimer=null;
+function playRemoteIndianTTS(text, langCode, fallback){
+  // Google Translate's browser TTS is used for Malayalam/Marathi/Bengali when
+  // iOS does not provide a matching installed system voice. This needs internet.
+  try {
+    if(!remoteTTS){remoteTTS=new Audio();remoteTTS.preload='none';}
+    if(remoteTTSTimer){clearTimeout(remoteTTSTimer);remoteTTSTimer=null;}
+    remoteTTS.pause();remoteTTS.removeAttribute('src');remoteTTS.load();
+    const q=String(text||'').trim();
+    if(!q){tip('No text to pronounce.');return;}
+    const url='https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl='+encodeURIComponent(langCode)+'&q='+encodeURIComponent(q);
+    let settled=false;
+    const clean=()=>{remoteTTS.onplaying=null;remoteTTS.onerror=null;};
+    remoteTTS.onplaying=()=>{settled=true;clean();tip('');};
+    remoteTTS.onerror=()=>{if(settled)return;clean();fallback();};
+    remoteTTS.src=url;
+    const p=remoteTTS.play();
+    if(p&&typeof p.catch==='function')p.catch(()=>{if(!settled){clean();fallback();}});
+    // Some iOS builds reject the remote audio URL before firing an error event.
+    remoteTTSTimer=setTimeout(()=>{if(!settled&&remoteTTS.paused){clean();fallback();}},5000);
+  } catch(e) { fallback(); }
+}
 function sayText(t,l){
-  if(!('speechSynthesis' in window)){tip('This browser cannot speak aloud — read the pronunciation text.');return}
-  const u=new SpeechSynthesisUtterance(t);u.lang=LG[l][1];u.rate=.8;
-  const p=LG[l][1].slice(0,2).toLowerCase(),sc=v=>(v.lang.toLowerCase().replace('_','-')===LG[l][1].toLowerCase()?4:0)+(/google|natural|neural|enhanced|premium|wavenet/i.test(v.name)?3:0)+(v.localService?0:1),v=VO.filter(v=>v.lang&&v.lang.toLowerCase().replace('_','-').startsWith(p)).sort((a,b)=>sc(b)-sc(a))[0];
-  if(v){u.voice=v;tip('')}else if(l!==0)tip('No '+nm(l)+' voice installed on this device — read the pronunciation text. (Android: Settings → Text-to-speech → Google → install the voice for this language.)');
-  if(l===9)tip('Rajasthani has no voice engine in browsers — played with a Hindi voice, so it is approximate. Follow the pronunciation text.');
-  speechSynthesis.cancel();speechSynthesis.speak(u);
+  const text=String(t==null?'':t).trim();
+  const langCode=(LG[l]&&LG[l][1])||'en-IN';
+  const base=langCode.toLowerCase().split('-')[0];
+  const speakWithSystemVoice=()=>{
+    if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){
+      tip('This iPhone browser cannot play speech here. Check the internet connection and tap Listen again.');return;
+    }
+    try{
+      gv();const u=new SpeechSynthesisUtterance(text);u.lang=langCode;u.rate=.78;u.pitch=1;
+      const normalized=langCode.toLowerCase().replace('_','-');
+      const score=v=>((v.lang||'').toLowerCase().replace('_','-')===normalized?10:((v.lang||'').toLowerCase().startsWith(base)?5:0))+( /siri|enhanced|premium|natural/i.test(v.name||'')?1:0);
+      const v=VO.filter(v=>v.lang&&(v.lang.toLowerCase().replace('_','-')===normalized||v.lang.toLowerCase().startsWith(base))).sort((a,b)=>score(b)-score(a))[0];
+      if(v)u.voice=v;
+      u.onerror=()=>tip('No working '+langCode+' voice is available on this iPhone. Keep internet on and try Listen again.');
+      u.onstart=()=>tip('');
+      window.speechSynthesis.cancel();
+      setTimeout(()=>{try{gv();window.speechSynthesis.speak(u)}catch(e){tip('Audio could not start. Check the iPhone sound settings.')}},120);
+    }catch(e){tip('Audio could not start. Check the iPhone sound settings.');}
+  };
+  if(!text){tip('No text to pronounce.');return;}
+  // iOS devices commonly lack installed web speech voices for these languages.
+  // Use online speech audio first so the selected language is spoken correctly.
+  const remoteCodes={'ml-IN':'ml','mr-IN':'mr','bn-IN':'bn'};
+  if(remoteCodes[langCode]){playRemoteIndianTTS(text,remoteCodes[langCode],speakWithSystemVoice);return;}
+  speakWithSystemVoice();
 }
 /* ---------- progress ---------- */
 const bk=(s,lv,i)=>[S.from,S.to,s,lv,i].join('_');
@@ -689,18 +730,25 @@ function pview(){
   if(i===undefined){$('lessonBody').innerHTML=`<div class="card" style="text-align:center"><h3>🎉 Round complete!</h3><div class="btns"><button data-a="again">Another round</button><button class="alt" data-go="quiz">Take quiz</button></div></div>`;return}
   const it=items[i];
   $('lessonBody').innerHTML=`<div class="hint">${P.n+1} / ${P.o.length}</div><div class="fc" data-a="flip"><div class="hint">${nm(S.from)}</div><div class="big sm">${esc(it.f.s)}</div>${P.rev?`<div class="hint">${nm(S.to)}</div><div class="big">${esc(it.t.s)}</div><div class="rom">${esc(it.t.r)}</div>`:'<div class="hint">Tap card to reveal</div>'}</div>
-  <div class="btns"><button class="alt" data-a="say" data-i="${i}">🔊 Listen</button>${SR?'<button data-a="speak">🎤 Speak it</button>':'<button data-a="rec">🎙️ Record &amp; compare</button>'}${P.rev?'<button class="bad" data-a="no">Again</button><button class="ok" data-a="yes">Got it ✓</button>':''}</div>
-  <div class="card" style="margin-top:10px"><label for="typedAnswer">Or type the phrase in ${esc(nm(S.to))} (native script or pronunciation)</label><input id="typedAnswer" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Type your answer here"><button data-a="typed" class="alt" style="width:100%;margin-top:8px">Check typed answer</button></div>
-  <div id="res" class="card hint" style="margin-top:10px">${SR?'Tap 🎤 to speak, or type your answer above.':'Speech recognition is unavailable here — type your answer above, or record your voice and compare manually.'}</div><audio id="pb" controls style="display:none;width:100%"></audio>`;
+  <div class="btns"><button class="alt" data-a="say" data-i="${i}">🔊 Listen</button><button data-a="speak">🎤 Speak / recognise</button><button class="alt" data-a="dictate">⌨️ iPhone Dictation</button>${P.rev?'<button class="bad" data-a="no">Again</button><button class="ok" data-a="yes">Got it ✓</button>':''}</div>
+  <div class="card" style="margin-top:10px"><label for="typedAnswer">Your answer in ${esc(nm(S.to))} (you can use the iPhone keyboard microphone)</label><input id="typedAnswer" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Tap here, then tap 🎙 on the iPhone keyboard"><button data-a="typed" class="alt" style="width:100%;margin-top:8px">Check answer</button></div>
+  <div id="res" class="card hint" style="margin-top:10px">Tap 🔊 Listen for pronunciation. For voice scoring, tap 🎤 Speak / recognise. If Safari does not support recognition, use ⌨️ iPhone Dictation and then Check answer.</div><audio id="pb" controls style="display:none;width:100%"></audio>`;
 }
 function speak(){
-  const it=items[P.o[P.n]];const r=new SR();r.lang=LG[S.to][1];r.interimResults=false;
-  $('res').textContent='🎤 Listening…';
-  r.onresult=e=>{const h=e.results[0][0].transcript,sc=sim(h,it.t.s);$('res').innerHTML=`You said: <b>${esc(h)}</b><br>Match: <b>${sc}%</b> ${sc>=70?'✅ Great!':sc>=40?'👍 Close — try again':'🔁 Listen and try again'}`};
-  r.onerror=e=>{$('res').textContent=e.error==='not-allowed'?(badOrigin()?ORIGIN_MSG:'Microphone blocked — allow it in browser settings.'):e.error==='network'?'Speech check needs internet in this browser — use Record & compare instead.':'Mic problem: '+e.error};
-  if(badOrigin()){$('res').textContent=ORIGIN_MSG;return}
-  try{r.start()}catch(x){$('res').textContent='Could not start speech recognition. Check microphone permission, or type your answer below.'}
+  const res=$('res'),input=$('typedAnswer');
+  if(badOrigin()){res.textContent=ORIGIN_MSG;return}
+  if(!SR){dictateFallback('This version of Safari does not provide live speech recognition. Tap ⌨️ iPhone Dictation, then tap the microphone on the iPhone keyboard and Check answer.');return}
+  const it=items[P.o[P.n]];let r;
+  try{r=new SR()}catch(e){dictateFallback('Live speech recognition is unavailable here. Use the iPhone keyboard microphone to dictate your answer.');return}
+  r.lang=LG[S.to][1]||'en-IN';r.interimResults=false;r.continuous=false;r.maxAlternatives=1;
+  res.textContent='🎤 Listening… speak now. If iPhone asks, allow microphone/speech recognition.';
+  r.onresult=e=>{const h=e.results&&e.results[0]&&e.results[0][0]?e.results[0][0].transcript:'';if(!h){dictateFallback('No speech was detected. Try iPhone Dictation below.');return}const sc=Math.max(sim(h,it.t.s),it.t.r?sim(h,it.t.r):0);res.innerHTML=`You said: <b>${esc(h)}</b><br>Match: <b>${sc}%</b> ${sc>=70?'✅ Great!':sc>=40?'👍 Close — try again':'🔁 Listen and try again'}`};
+  r.onerror=e=>{const err=e&&e.error||'unknown';if(['not-allowed','service-not-allowed','audio-capture','language-not-supported','network','aborted','no-speech'].includes(err)){dictateFallback('Safari could not complete live recognition ('+err+'). Use ⌨️ iPhone Dictation below, then tap Check answer.');}else{res.textContent='Speech recognition problem ('+err+'). Use iPhone Dictation or type your answer.'}};
+  r.onend=()=>{if(res&&res.textContent==='🎤 Listening… speak now. If iPhone asks, allow microphone/speech recognition.')res.textContent='No result received. Tap Speak again or use iPhone Dictation.'};
+  try{r.start()}catch(x){dictateFallback('Could not start live recognition. Use the iPhone keyboard microphone to dictate your answer.')}
 }
+function dictateFallback(message){const res=$('res');if(res)res.textContent=message;const input=$('typedAnswer');if(input){input.focus();try{input.click()}catch(e){}}}
+function useDictation(){const input=$('typedAnswer'),res=$('res');if(res)res.textContent='The iPhone keyboard should appear. Tap its 🎙️ microphone, speak your answer, tap Done, then tap Check answer. If the keyboard microphone is missing, enable Settings → General → Keyboard → Enable Dictation.';if(input){input.focus();try{input.click()}catch(e){}}}
 async function rec(){
   try{
     const st=await navigator.mediaDevices.getUserMedia({audio:true}),mr=new MediaRecorder(st),ch=[];
@@ -806,6 +854,7 @@ document.addEventListener('click',e=>{
   else if(a==='yes'||a==='no'){mark(P.o[P.n],a==='yes',5);P.n++;P.rev=false;pview()}
   else if(a==='again')startP();
   else if(a==='speak')speak();
+  else if(a==='dictate')useDictation();
   else if(a==='rec')rec();
   else if(a==='typed')typedCheck();
   else if(a==='basicsay'){const r=BASIC[+b.dataset.i];if(S.to===0)sayText(r.en,0);else sayText((r.langs[S.to-1]||{s:r.en}).s,S.to);}
